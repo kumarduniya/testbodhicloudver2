@@ -5912,17 +5912,17 @@
             if (!questionsArray || !Array.isArray(questionsArray)) return [];
             return questionsArray.map(q => {
                 const safeQ = { ...q };
-                if (safeQ.q) safeQ.q = window.sanitizeMath(safeQ.q);
-                if (safeQ.exp) safeQ.exp = window.sanitizeMath(safeQ.exp);
-                if (safeQ.passage) safeQ.passage = window.sanitizeMath(safeQ.passage);
+                if (safeQ.q) safeQ.q = window.sanitizeMath(window.stripCitationRefs(safeQ.q));
+                if (safeQ.exp) safeQ.exp = window.sanitizeMath(window.stripCitationRefs(safeQ.exp));
+                if (safeQ.passage) safeQ.passage = window.sanitizeMath(window.stripCitationRefs(safeQ.passage));
                 if (safeQ.opts) {
-                    safeQ.opts = safeQ.opts.map(o => ({ ...o, text: window.sanitizeMath(o.text) }));
+                    safeQ.opts = safeQ.opts.map(o => ({ ...o, text: window.sanitizeMath(window.stripCitationRefs(o.text)) }));
                 }
                 if (safeQ.predicted && Array.isArray(safeQ.predicted)) {
                     safeQ.predicted = safeQ.predicted.map(p => ({
                         ...p,
-                        q: p.q ? window.sanitizeMath(p.q) : p.q,
-                        s: p.s ? window.sanitizeMath(p.s) : p.s
+                        q: p.q ? window.sanitizeMath(window.stripCitationRefs(p.q)) : p.q,
+                        s: p.s ? window.sanitizeMath(window.stripCitationRefs(p.s)) : p.s
                     }));
                 }
                 return safeQ;
@@ -5932,8 +5932,18 @@
         /* ==========================================================================
            CORE PARSER – FIXED: preserves explanation even with tags
            ========================================================================== */
+        // Removes stray citation markers like "[cite: 1]", "[cite:1, 2]" that
+        // sometimes get pasted along with question text (e.g. from Google Docs
+        // exports). Runs on raw pasted text and on already-saved fields so old
+        // questions get cleaned automatically too, without touching anything else.
+        window.stripCitationRefs = function(text) {
+            if (!text) return text;
+            return String(text).replace(/\[\s*cite\s*:\s*[\d,\s]*\]/gi, '');
+        };
+
         window.parseRawQuestions = function(rawText) {
             if (!rawText) return [];
+            rawText = window.stripCitationRefs(rawText);
             // NOTE: sanitizeMath is intentionally NOT run here on the whole raw blob.
             // Running it across all questions at once let a single unprotected
             // reasoning-notation "$" (e.g. L$M) pair up with an unrelated "$" many
@@ -8185,7 +8195,7 @@
             window.closeModal();
             let raw = data.rawText || "";
             if (data.questions) { data.questions = window.sanitizeQuestions(data.questions); }
-            if (raw) { raw = window.sanitizeMath(raw);
+            if (raw) { raw = window.sanitizeMath(window.stripCitationRefs(raw));
                 data.rawText = raw; }
             if (!raw && data.questions && data.questions.length > 0) {
                 raw = data.questions.map((q, i) => window.reverseMapQuestionToRaw(q, i)).join('\n');
@@ -8207,7 +8217,7 @@
         window.editTest = function(code) {
             const t = window.adminUnifiedTests.find(x => x.code === code);
             if (!t) return;
-            let raw = t.rawText || "";
+            let raw = window.stripCitationRefs(t.rawText || "");
             // Always pull the full, current data fresh from Firestore before
             // editing — UNLESS this exact test was already freshly fetched
             // earlier in this very function call chain (t.isFetched, set by
@@ -8667,7 +8677,7 @@
             // freshness — only trust a fetch that happened in this exact
             // session (t.isFetched).
             if (!t.isFetched) { window.fetchTestForAdmin(code, 'pdf', mode); return; }
-            if (raw) raw = window.sanitizeMath(raw);
+            if (raw) raw = window.sanitizeMath(window.stripCitationRefs(raw));
             if (!raw && t.questions && t.questions.length > 0) {
                 raw = t.questions.map((q, i) => window.reverseMapQuestionToRaw(q, i)).join('\n');
                 t.rawText = raw;
@@ -10952,7 +10962,7 @@
             if (data.error) return window.showCustomAlert("Error", "Test data missing.", "❌");
             let raw = data.rawText || "";
             if (data.questions) { data.questions = window.sanitizeQuestions(data.questions); }
-            if (raw) { raw = window.sanitizeMath(raw);
+            if (raw) { raw = window.sanitizeMath(window.stripCitationRefs(raw));
                 data.rawText = raw; }
             if (!raw && data.questions && data.questions.length > 0) {
                 raw = data.questions.map((q, i) => window.reverseMapQuestionToRaw(q, i)).join('\n');
