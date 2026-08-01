@@ -4993,7 +4993,12 @@
 
                 <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:12px;">
                     <h3 style="color:var(--primary);margin:0;font-size:15px;">📁 Active Tests List</h3>
-                    <button class="btn btn-danger btn-sm" onclick="window.clearAdminMemory()" style="font-size:11px;">🗑️ Clear Memory</button>
+                    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+                        <span id="bulk-select-count" style="display:none;font-size:11px;font-weight:600;color:var(--text-muted);"></span>
+                        <button id="btn-delete-selected" class="btn btn-danger btn-sm" style="display:none;font-size:11px;" onclick="window.confirmDeleteSelectedTests()">🗑️ Delete Selected</button>
+                        <button id="btn-toggle-select-mode" class="btn btn-outline btn-sm" style="font-size:11px;" onclick="window.toggleBulkSelectMode()">☑️ Select Multiple</button>
+                        <button class="btn btn-danger btn-sm" onclick="window.clearAdminMemory()" style="font-size:11px;">🗑️ Clear Memory</button>
+                    </div>
                 </div>
                 <div id="dashboard-list"></div>
             </div>
@@ -7986,9 +7991,14 @@
                         (!t.liveEnd || new Date(t.liveEnd).getTime() >= nowTs);
                     const stopLiveBtn = isCurrentlyRunning ?
                         `<button class="btn btn-danger btn-sm" onclick="window.adminStopLiveTest('${t.code}')" style="font-size:9px;padding:3px 10px;">🛑 Stop Live Now</button>` : "";
+                    const isSelected = window._bulkSelectedCodes && window._bulkSelectedCodes.has(t.code);
+                    const selectCheckbox = window._bulkSelectMode ?
+                        `<label style="display:flex;align-items:center;gap:4px;margin-right:6px;cursor:pointer;">
+                            <input type="checkbox" ${isSelected ? 'checked' : ''} onchange="window.toggleTestSelect('${t.code}', this.checked)" style="width:16px;height:16px;cursor:pointer;">
+                        </label>` : '';
                     h += `
                         <div class="test-card" ${isLiveMode ? 'style="border:2px solid var(--danger);"' : ''}>
-                            <div class="test-header"><div class="test-title" style="font-size:13px;">🎓 ${cEx} | ${cSu} (${t.code})</div>${sBtn}</div>
+                            <div class="test-header">${selectCheckbox}<div class="test-title" style="font-size:13px;">🎓 ${cEx} | ${cSu} (${t.code})</div>${sBtn}</div>
                             ${chapterTopic ? `<div class="test-subtitle" style="font-size:10px;">📖 ${chapterTopic}</div>` : ""}
                             <div class="test-meta">${liveBadge}<span class="badge" style="font-size:8px;">📂 ${cCa}</span><span class="badge badge-primary" style="font-size:8px;">Qs: ${qC}</span><span class="badge" style="font-size:8px;">${pT}</span><span class="badge" style="font-size:8px;">+${t.marks||2}/-${t.neg||0}</span></div>
                             <input type="text" value="${t.link||(BASE_URL+'?test='+t.code)}" readonly style="width:100%;padding:6px;border:1px solid var(--border-color);font-size:10px;border-radius:var(--radius-sm);background:var(--bg-input);color:var(--text-main);margin-bottom:4px;">
@@ -8251,6 +8261,91 @@
             const btn = document.getElementById('btn-generate');
             if (btn) { btn.innerText = "🚀 Update Test";
                 btn.style.background = "#f59e0b"; }
+        };
+
+        window._bulkSelectMode = false;
+        window._bulkSelectedCodes = new Set();
+
+        window.toggleBulkSelectMode = function() {
+            window._bulkSelectMode = !window._bulkSelectMode;
+            if (!window._bulkSelectMode) window._bulkSelectedCodes.clear();
+            const btn = document.getElementById('btn-toggle-select-mode');
+            if (btn) btn.innerText = window._bulkSelectMode ? "✕ Cancel Selection" : "☑️ Select Multiple";
+            window._updateBulkSelectUI();
+            window.renderDashboard();
+        };
+
+        window.toggleTestSelect = function(code, checked) {
+            if (checked) window._bulkSelectedCodes.add(code);
+            else window._bulkSelectedCodes.delete(code);
+            window._updateBulkSelectUI();
+        };
+
+        window._updateBulkSelectUI = function() {
+            const countEl = document.getElementById('bulk-select-count');
+            const delBtn = document.getElementById('btn-delete-selected');
+            const n = window._bulkSelectedCodes.size;
+            if (countEl) { countEl.style.display = window._bulkSelectMode ? 'inline' : 'none';
+                countEl.innerText = n > 0 ? `${n} selected` : (window._bulkSelectMode ? 'Tap tests to select' : ''); }
+            if (delBtn) delBtn.style.display = (window._bulkSelectMode && n > 0) ? 'inline-block' : 'none';
+        };
+
+        window.confirmDeleteSelectedTests = function() {
+            const codes = Array.from(window._bulkSelectedCodes);
+            if (!codes.length) return;
+            window.showCustomConfirm(
+                "Delete Selected Tests",
+                `This will <b>PERMANENTLY</b> delete ${codes.length} test(s) from the server:<br><br>${codes.join(', ')}<br><br>This cannot be undone. Continue?`,
+                window.deleteSelectedTests, "🗑️"
+            );
+        };
+
+        window.deleteSelectedTests = async function() {
+            const codes = Array.from(window._bulkSelectedCodes);
+            if (!codes.length) return;
+            window.showLoadingModal(`Deleting ${codes.length} test(s)...<br><br>Please don't close this tab.`);
+            try {
+                // Delete each test doc AND its secure/key sub-document (the
+                // single-test Delete button only ever removed the parent
+                // doc, silently leaving the answers/rawText behind as an
+                // orphaned sub-document — cleaned up properly here).
+                // Delete each test doc AND its secure/key sub-document (the
+                // single-test Delete button only ever removed the parent
+                // doc, silently leaving the answers/rawText behind as an
+                // orphaned sub-document — cleaned up properly here).
+                // Chunked at 200 tests/batch (2 deletes each = 400 ops) to
+                // stay safely under Firestore's 500-operation batch limit.
+                const CHUNK = 200;
+                for (let i = 0; i < codes.length; i += CHUNK) {
+                    const batch = db.batch();
+                    codes.slice(i, i + CHUNK).forEach(code => {
+                        const ref = db.collection("tests").doc(code);
+                        batch.delete(ref);
+                        batch.delete(ref.collection("secure").doc("key"));
+                    });
+                    await batch.commit();
+                }
+
+                const sT = JSON.parse(localStorage.getItem('myMockTests')) || [];
+                localStorage.setItem('myMockTests', JSON.stringify(sT.filter(x => !codes.includes(x.code))));
+                const hidden = window.getHiddenTests();
+                codes.forEach(code => { if (!hidden.includes(code)) hidden.push(code); });
+                localStorage.setItem('mockSarthiHidden', JSON.stringify(hidden));
+                window.globalActiveTests = (window.globalActiveTests || []).filter(x => !codes.includes(x.code));
+                window.adminUnifiedTests = (window.adminUnifiedTests || []).filter(x => !codes.includes(x.code));
+
+                window._bulkSelectedCodes.clear();
+                window._bulkSelectMode = false;
+                const btn = document.getElementById('btn-toggle-select-mode');
+                if (btn) btn.innerText = "☑️ Select Multiple";
+                window._updateBulkSelectUI();
+                window.closeModal();
+                window.showCustomAlert("Deleted", `${codes.length} test(s) permanently deleted from the server.`, "🗑️");
+                window.renderDashboard();
+            } catch (err) {
+                window.closeModal();
+                window.showCustomAlert("Error", "Bulk delete failed: " + err.message, "❌");
+            }
         };
 
         window.deleteTest = function(code) {
