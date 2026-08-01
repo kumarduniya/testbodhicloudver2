@@ -5126,6 +5126,25 @@
 
                     <div id="logo-save-status" style="margin-top:8px;text-align:center;font-weight:600;color:var(--success);display:none;font-size:13px;">✅ Logo updated successfully!</div>
                 </div>
+
+                <div class="admin-section" style="border:2px solid var(--danger);margin-top:16px;">
+                    <div class="admin-section-title" style="color:var(--danger);font-size:14px;">🧹 Orphan Results Cleanup</div>
+                    <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">
+                        Scans every saved student result and finds the ones whose test <b>no longer exists</b> in
+                        Saved Tests (old demo/dev-testing tests, or tests that were deleted). Review the list
+                        below, then permanently delete them from the server — students will stop seeing them in
+                        My Report immediately.
+                    </p>
+                    <button id="btn-scan-orphans" class="btn btn-primary" onclick="window.scanOrphanResults()">🔍
+                        Scan for Orphan Results</button>
+                    <div id="orphan-scan-status" style="margin-top:10px;font-size:12px;color:var(--text-muted);"></div>
+                    <div id="orphan-scan-list"
+                        style="display:none;margin-top:10px;max-height:220px;overflow-y:auto;border:1px solid var(--border-color);border-radius:8px;padding:8px;font-size:12px;">
+                    </div>
+                    <button id="btn-delete-orphans" class="btn btn-danger"
+                        style="display:none;margin-top:10px;" onclick="window.confirmDeleteOrphanResults()">🗑️
+                        Delete All Orphan Results</button>
+                </div>
             </div>
 
             <div id="admin-liveschedule-section" style="display:none;">
@@ -7998,6 +8017,101 @@
                     localStorage.setItem('myMockTests', JSON.stringify(sT)); }
                 window.fetchActiveTests();
             }).catch(err => { window.showCustomAlert("Error", "Failed to update test status in Database.", "❌"); });
+        };
+
+        // ==========================================================================
+        // ORPHAN RESULTS CLEANUP — finds & permanently deletes student result
+        // documents whose test no longer exists in the `tests` collection
+        // (old demo/dev-testing tests from before this was a real product,
+        // tests that got deleted, etc.) so they stop cluttering My Report.
+        // ==========================================================================
+        window._orphanResultIds = [];
+        window.scanOrphanResults = async function() {
+            const statusEl = document.getElementById('orphan-scan-status');
+            const listEl = document.getElementById('orphan-scan-list');
+            const delBtn = document.getElementById('btn-delete-orphans');
+            const scanBtn = document.getElementById('btn-scan-orphans');
+            if (scanBtn) { scanBtn.disabled = true;
+                scanBtn.innerText = "🔍 Scanning..."; }
+            if (statusEl) statusEl.innerText = "Scanning every saved result — this can take a moment if you have a lot of data...";
+            if (listEl) { listEl.style.display = 'none';
+                listEl.innerHTML = ''; }
+            if (delBtn) delBtn.style.display = 'none';
+            window._orphanResultIds = [];
+            try {
+                const testsSnap = await db.collection("tests").get();
+                const existingCodes = new Set(testsSnap.docs.map(d => d.id));
+                const resultsSnap = await db.collection("results").get();
+                const orphanIds = [];
+                const perCodeCount = {};
+                resultsSnap.forEach(doc => {
+                    const r = doc.data();
+                    const rawCode = r.testCode ? String(r.testCode) : "";
+                    const code = rawCode.replace('-RE', '');
+                    if (code && !existingCodes.has(code)) {
+                        orphanIds.push(doc.id);
+                        perCodeCount[code] = (perCodeCount[code] || 0) + 1;
+                    }
+                });
+                window._orphanResultIds = orphanIds;
+                if (scanBtn) { scanBtn.disabled = false;
+                    scanBtn.innerText = "🔍 Scan for Orphan Results"; }
+                if (orphanIds.length === 0) {
+                    if (statusEl) statusEl.innerText = "✅ No orphan results found — everything is clean.";
+                    return;
+                }
+                const codes = Object.keys(perCodeCount);
+                if (statusEl) statusEl.innerHTML =
+                    `Found <b>${orphanIds.length}</b> orphan result(s) across <b>${codes.length}</b> missing/deleted test code(s):`;
+                if (listEl) {
+                    listEl.style.display = 'block';
+                    listEl.innerHTML = codes.map(c =>
+                        `<div>• <b>${c}</b> — ${perCodeCount[c]} result(s)</div>`).join('');
+                }
+                if (delBtn) { delBtn.style.display = 'inline-block';
+                    delBtn.innerText = `🗑️ Delete All ${orphanIds.length} Orphan Results`; }
+            } catch (err) {
+                if (scanBtn) { scanBtn.disabled = false;
+                    scanBtn.innerText = "🔍 Scan for Orphan Results"; }
+                if (statusEl) statusEl.innerText = "❌ Scan failed: " + err.message;
+            }
+        };
+
+        window.confirmDeleteOrphanResults = function() {
+            const count = window._orphanResultIds.length;
+            if (!count) return;
+            window.showCustomConfirm(
+                "Delete Orphan Results",
+                `This will <b>PERMANENTLY</b> delete ${count} result document(s) from the server — this cannot be undone. Continue?`,
+                window.deleteOrphanResults, "🗑️"
+            );
+        };
+
+        window.deleteOrphanResults = async function() {
+            const ids = window._orphanResultIds || [];
+            if (!ids.length) return;
+            window.showLoadingModal(`Deleting ${ids.length} orphan result(s)...<br><br>Please don't close this tab.`);
+            try {
+                // Firestore batched writes are capped at 500 ops each.
+                const CHUNK = 450;
+                for (let i = 0; i < ids.length; i += CHUNK) {
+                    const batch = db.batch();
+                    ids.slice(i, i + CHUNK).forEach(id => batch.delete(db.collection("results").doc(id)));
+                    await batch.commit();
+                }
+                window.closeModal();
+                window.showCustomAlert("Success", `Deleted ${ids.length} orphan result(s) from the server.`, "✅");
+                window._orphanResultIds = [];
+                const statusEl = document.getElementById('orphan-scan-status');
+                const listEl = document.getElementById('orphan-scan-list');
+                const delBtn = document.getElementById('btn-delete-orphans');
+                if (statusEl) statusEl.innerText = "✅ Cleanup complete.";
+                if (listEl) listEl.style.display = 'none';
+                if (delBtn) delBtn.style.display = 'none';
+            } catch (err) {
+                window.closeModal();
+                window.showCustomAlert("Error", "Delete failed: " + err.message, "❌");
+            }
         };
 
         window.fetchTestForAdmin = function(code, action, mode) {
