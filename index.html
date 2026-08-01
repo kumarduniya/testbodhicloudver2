@@ -5150,6 +5150,24 @@
                         style="display:none;margin-top:10px;" onclick="window.confirmDeleteOrphanResults()">🗑️
                         Delete All Orphan Results</button>
                 </div>
+
+                <div class="admin-section" style="border:2px solid var(--danger);margin-top:16px;">
+                    <div class="admin-section-title" style="color:var(--danger);font-size:14px;">🧹 Manual Test
+                        Code Cleanup</div>
+                    <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">
+                        For test codes that were deleted with the OLD delete button (before it also cleaned up
+                        the hidden <code>secure</code> sub-document) — these leave a "ghost" behind that <b>won't
+                            show up in Saved Tests</b> because the main document is genuinely already gone. Paste
+                        the test code(s) below (comma or newline separated) to wipe out any leftover data for
+                        them directly. Safe to run even if a code was already fully clean — it simply does
+                        nothing for those.
+                    </p>
+                    <textarea id="manual-cleanup-codes" rows="3" placeholder="e.g. T-98876, T-3648, T-72338, T-23138, T-18628"
+                        style="width:100%;padding:8px;border:1px solid var(--border-color);border-radius:var(--radius-sm);background:var(--bg-input);color:var(--text-main);font-size:12px;margin-bottom:8px;"></textarea>
+                    <button class="btn btn-danger" onclick="window.confirmManualCleanupCodes()">🗑️ Clean Up These
+                        Codes</button>
+                    <div id="manual-cleanup-status" style="margin-top:10px;font-size:12px;color:var(--text-muted);"></div>
+                </div>
             </div>
 
             <div id="admin-liveschedule-section" style="display:none;">
@@ -8345,6 +8363,50 @@
             } catch (err) {
                 window.closeModal();
                 window.showCustomAlert("Error", "Bulk delete failed: " + err.message, "❌");
+            }
+        };
+
+        window.confirmManualCleanupCodes = function() {
+            const el = document.getElementById('manual-cleanup-codes');
+            const raw = el ? el.value : "";
+            const codes = Array.from(new Set(
+                raw.split(/[,\n]/).map(c => c.trim()).filter(Boolean)
+            ));
+            if (!codes.length) {
+                const statusEl = document.getElementById('manual-cleanup-status');
+                if (statusEl) statusEl.innerText = "❌ Paste at least one test code first.";
+                return;
+            }
+            window.showCustomConfirm(
+                "Clean Up Test Codes",
+                `This will <b>PERMANENTLY</b> delete any remaining data (test doc + secure sub-doc) for ${codes.length} code(s):<br><br>${codes.join(', ')}<br><br>This cannot be undone. Continue?`,
+                () => window.runManualCleanupCodes(codes), "🗑️"
+            );
+        };
+
+        window.runManualCleanupCodes = async function(codes) {
+            const statusEl = document.getElementById('manual-cleanup-status');
+            if (statusEl) statusEl.innerText = `Cleaning up ${codes.length} code(s)...`;
+            try {
+                const CHUNK = 200;
+                for (let i = 0; i < codes.length; i += CHUNK) {
+                    const batch = db.batch();
+                    codes.slice(i, i + CHUNK).forEach(code => {
+                        const ref = db.collection("tests").doc(code);
+                        batch.delete(ref);
+                        batch.delete(ref.collection("secure").doc("key"));
+                    });
+                    await batch.commit();
+                }
+                const sT = JSON.parse(localStorage.getItem('myMockTests')) || [];
+                localStorage.setItem('myMockTests', JSON.stringify(sT.filter(x => !codes.includes(x.code))));
+                window.globalActiveTests = (window.globalActiveTests || []).filter(x => !codes.includes(x.code));
+                window.adminUnifiedTests = (window.adminUnifiedTests || []).filter(x => !codes.includes(x.code));
+                if (statusEl) statusEl.innerText = `✅ Cleaned up ${codes.length} code(s) successfully.`;
+                const inputEl = document.getElementById('manual-cleanup-codes');
+                if (inputEl) inputEl.value = '';
+            } catch (err) {
+                if (statusEl) statusEl.innerText = "❌ Cleanup failed: " + err.message;
             }
         };
 
