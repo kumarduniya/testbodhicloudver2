@@ -3375,27 +3375,11 @@
             .print-exp img,
             .print-passage img {
                 max-width: 100% !important;
-                width: auto !important;
-                max-height: 320px !important;
+                max-height: 100px !important;
                 object-fit: contain !important;
-                object-position: left top !important;
                 page-break-inside: avoid !important;
                 display: block !important;
-                float: none !important;
-                margin: 6px auto 6px 0 !important;
-                text-align: left !important;
-            }
-            /* Guarantees left alignment even when the pasted question HTML
-               wraps the <img>/<svg> in its own <p>/<div style="text-align:
-               center"> (common when content is pasted in from Word/Docs) —
-               without this, that inherited centering can still visually
-               offset a display:block image away from the left edge even
-               though the image element's own margin is 0 on the left. */
-            .print-q p:has(> img), .print-exp p:has(> img), .print-passage p:has(> img),
-            .print-q div:has(> img), .print-exp div:has(> img), .print-passage div:has(> img),
-            .print-q p:has(> svg), .print-exp p:has(> svg), .print-passage p:has(> svg),
-            .print-q div:has(> svg), .print-exp div:has(> svg), .print-passage div:has(> svg) {
-                text-align: left !important;
+                margin: 3px 0 !important;
             }
             /* SVG question images in the PDF: bigger and uniform across every
                question (regardless of the pasted SVG's own width/height/
@@ -3404,8 +3388,8 @@
             .print-q svg,
             .print-exp svg,
             .print-passage svg {
-                width: 360px !important;
-                height: 240px !important;
+                width: 300px !important;
+                height: 200px !important;
                 max-width: 100% !important;
                 max-height: none !important;
                 object-fit: contain !important;
@@ -5852,61 +5836,11 @@
         window.sanitizeMath = function(text) {
             if (!text) return text;
             let str = String(text);
-
-            // Protect <img ...> and <svg>...</svg> tags BEFORE any $ math
-            // processing runs. If a question's image/diagram markup happens
-            // to sit between two $ signs used elsewhere in the same field,
-            // the $...$ regex below would swallow the whole tag as "math
-            // content" and hand it to MathJax, which can't parse raw HTML —
-            // the result is blank output with no visible error, which is
-            // exactly what made images/SVGs silently disappear. Stashing them
-            // first means the $ regex never sees them at all.
-            const protectedTags = [];
-            const TAG_OPEN = '\uE040', TAG_CLOSE = '\uE041';
-            str = str.replace(/<svg[\s\S]*?<\/svg>/gi, (m) => {
-                protectedTags.push(m);
-                return `${TAG_OPEN}${protectedTags.length - 1}${TAG_CLOSE}`;
-            });
-            str = str.replace(/<img\b[^>]*>/gi, (m) => {
-                protectedTags.push(m);
-                return `${TAG_OPEN}${protectedTags.length - 1}${TAG_CLOSE}`;
-            });
-
-            // Fully unwrap \text{...} even when it's nested several layers
-            // deep (\text{\text{\text{X}}}) — content that has been through
-            // more than one broken export/print cycle accumulates these.
-            // The old single-pass replace() only ever stripped the
-            // innermost \text{...} (its [^{}]* can't match across an inner
-            // brace), leaving the outer \text{ ... } shells behind as
-            // orphaned, unbalanced TeX — which is exactly what produced
-            // MathJax's "Extra close brace or missing open brace" error
-            // text leaking into the page/PDF for badly-nested questions.
-            // Looping the same replace until it stops changing anything
-            // guarantees every layer is peeled off, however deep.
-            {
-                let prevText;
-                do {
-                    prevText = str;
-                    str = str.replace(/\\text\{([^{}]*)\}/g, '$1');
-                } while (str !== prevText);
-            }
+            str = str.replace(/\\text\{([^{}]*)\}/g, '$1');
             const PLACEHOLDER = "__RS_DOLLAR__";
             str = str.replace(/([a-zA-Z0-9])\$([a-zA-Z0-9])/g, `$1${PLACEHOLDER}$2`);
 
             const HINDI_RE = /[\u0900-\u097F]/;
-            const HINDI_PHRASE_SRC = '[\\u0900-\\u097F](?:[\\u0900-\\u097F\\u0964\\u0965 \\t\\-.,;:()/\']*[\\u0900-\\u097F])?';
-
-            // Math chunks re-emitted by the mixed-span handler below are
-            // stashed here and swapped back in only after ALL FOUR outer
-            // delimiter passes ($$, $, \[\], \(\)) have finished — otherwise
-            // the literal "$"/"$$" characters inside a freshly-built chunk
-            // would get matched AGAIN by the next pass in this same call.
-            const mathChunks = [];
-            const CHUNK_OPEN = '\uE020', CHUNK_CLOSE = '\uE021';
-            function stashChunk(html) {
-                mathChunks.push(html);
-                return `${CHUNK_OPEN}${mathChunks.length - 1}${CHUNK_CLOSE}`;
-            }
 
             // Builds a plain-HTML fraction (numerator over denominator, browser
             // rendered) instead of a TeX \frac — used only when the fraction
@@ -5916,36 +5850,14 @@
                 return `<span class="hindi-frac"><span class="hf-num">${numer.trim()}</span><span class="hf-den">${denom.trim()}</span></span>`;
             }
 
-            // In real TeX, an un-escaped "%" starts a comment that silently
-            // eats everything after it on that line (including the closing
-            // "$"), which is exactly what produces MathJax's red "Math input
-            // error" plus Hindi/number text getting cut off right after a "%"
-            // sign — very common in profit/loss/discount questions ("5%",
-            // "20%" etc.). This escapes any bare "%" (not already "\%") to
-            // "\%" before the text is handed to MathJax, without touching
-            // any percent sign that lives inside plain (non-MathJax) HTML.
-            function escPercent(s) {
-                return s.replace(/\\%/g, '\uE030').replace(/%/g, '\\%').replace(/\uE030/g, '\\%');
-            }
-
-            // The Rupee sign (₹) isn't a character MathJax's TeX parser
-            // understands, so any "$₹2288$" style span throws its red
-            // "Math input error" badge. Wrapping it in \text{} tells MathJax
-            // to treat it as a literal symbol instead of trying to parse it
-            // as math syntax — safe here since ₹ is a single currency glyph,
-            // not Devanagari script that needs conjunct shaping.
-            function escRupee(s) {
-                return s.replace(/₹/g, '\\text{₹}');
-            }
-
-            // Symbol/spacing clean-up shared by both the Hindi-only bypass and
-            // the mixed-span path below (kept separate from actual Hindi-word
-            // handling so it's safe to run on plain math leftovers too).
-            function plainSymbols(s) {
-                let out = s;
+            // Converts a whole math span to plain HTML (dropping TeX delimiters
+            // entirely) when it's really just numbers + Hindi labels — no
+            // actual algebra — so the browser's native font shaping handles
+            // the Devanagari instead of MathJax mangling it.
+            function bypassToHTML(innerMath) {
+                let out = innerMath;
+                out = out.replace(/\\frac\{([^{}]*)\}\{([^{}]*)\}/g, (m, a, b) => htmlFrac(a, b));
                 out = out.replace(/\\times/g, '×').replace(/\\Rightarrow/g, '⇒').replace(/\\div/g, '÷').replace(/\\cdot/g, '×');
-                out = out.replace(/\\propto/g, '∝').replace(/\\approx/g, '≈').replace(/\\pm/g, '±')
-                    .replace(/\\neq/g, '≠').replace(/\\leq/g, '≤').replace(/\\geq/g, '≥');
                 out = out.replace(/\\,/g, ' ').replace(/\\;/g, ' ').replace(/\\ /g, ' ');
                 out = out.replace(/ {2,}/g, ' ');
                 return out;
@@ -5959,146 +5871,40 @@
                 return /[a-zA-Z]/.test(stripped);
             }
 
-            // Strips display-math wrapper commands (\begin{aligned}...\end{...},
-            // "&" alignment) and turns real TeX line breaks ("\\") into a <br>
-            // marker — needed once we start slicing a math span into several
-            // independent chunks below, since an aligned/array environment (or
-            // a bare "\\") can't be split across separate $...$ pairs without
-            // becoming invalid TeX.
-            const BR_MARK = '\uE010';
-            function stripEnvironment(s) {
-                let out = s.replace(/\\begin\{[a-zA-Z*]+\}/g, '').replace(/\\end\{[a-zA-Z*]+\}/g, '');
-                out = out.replace(/&/g, ' ');
-                out = out.replace(/\\\\(?:\[[^\]]*\])?/g, BR_MARK);
-                return out;
+            function processMath(math) {
+                if (!math || !math.trim()) return math;
+                let processed = math;
+                processed = processed.replace(/(?<!\\)#/g, '\\#');
+                // Wrap whole Hindi PHRASES (word + internal spaces/hyphens/punctuation)
+                // in one \text{}, not just single contiguous-script runs — so spacing
+                // between Hindi words (e.g. "यूनिट है", "गति समय") survives, since
+                // spaces are only preserved by MathJax when they're inside \text{}.
+                processed = processed.replace(
+                    /[\u0900-\u097F](?:[\u0900-\u097F\u0964\u0965 \t\-.,;:()/']*[\u0900-\u097F])?/g,
+                    (m) => `\\text{${m}}`
+                );
+                // Pull any space touching a \text{} boundary INSIDE the braces —
+                // plain spaces outside \text{} are invisible in math mode, so
+                // "7 \text{यूनिट}" would otherwise render as "7यूनिट" with no gap.
+                processed = processed.replace(/([ \t]+)\\text\{/g, '\\text{$1');
+                processed = processed.replace(/\\text\{([^{}]*)\}([ \t]+)/g, '\\text{$1$2}');
+                return processed;
             }
 
-            // \left( ... \right) pairs get torn apart whenever a Hindi-labelled
-            // \frac sits between them — the frac is pulled out as its own HTML
-            // chunk, so \left and \right end up stranded in two separate math
-            // spans with no partner, which is exactly what produces MathJax's
-            // "Extra \left or missing \right" / "Missing \left or extra
-            // \right" errors. \left/\right only control bracket auto-sizing
-            // (purely cosmetic), so it's safe to drop them and keep the plain
-            // "(" / ")" characters wherever Hindi text is involved.
-            function stripLeftRight(s) {
-                return s.replace(/\\left/g, '').replace(/\\right/g, '');
-            }
-
-            // Decides, per math span, whether to keep it as real TeX (for
-            // MathJax), bypass entirely to plain HTML (Hindi-only content), or
-            // — for a MIXED span that combines Hindi labels with genuine Latin
-            // math variables (e.g. "T_A", "E_B") — walk through it and pull
-            // out just the Hindi words/phrases and any Hindi-labelled \frac
-            // as native HTML, while whatever real math remains still goes to
-            // MathJax. This is what fixes labels like "कार्यक्षमता"/"इकाई"/
-            // "दिन" showing up as broken glyphs (क○र○यक○षमत○) whenever they
-            // shared a math block with a Latin variable — previously that one
-            // Latin variable forced the ENTIRE block (Hindi included) through
-            // MathJax's \text{}, which can't shape Devanagari conjuncts.
+            // Decides, per math span, whether to keep it as real TeX (for MathJax)
+            // or bypass entirely to plain HTML (for Hindi-only content).
             function handleSpan(innerMath, open, close) {
-                if (!HINDI_RE.test(innerMath)) {
-                    return open + escRupee(escPercent(innerMath)) + close; // pure math, % + ₹ escaped for MathJax
+                if (HINDI_RE.test(innerMath) && !hasLatinMathVar(innerMath)) {
+                    return bypassToHTML(innerMath.replace(/\\text\{([^{}]*)\}/g, '$1'));
                 }
-
-                if (!hasLatinMathVar(innerMath)) {
-                    // Hindi-only span — bypass entirely to native HTML.
-                    let out = stripLeftRight(stripEnvironment(innerMath));
-                    out = out.replace(/\\frac\{([^{}]*)\}\{([^{}]*)\}/g, (m, a, b) => htmlFrac(a, b));
-                    out = plainSymbols(out);
-                    out = out.split(BR_MARK).map(p => p.trim()).filter(p => p !== '').join('<br>');
-                    return out;
-                }
-
-                // Mixed span: Hindi labels + real Latin math variables.
-                let working = stripLeftRight(stripEnvironment(innerMath));
-
-                // Protect Hindi-labelled fractions first (as a whole unit),
-                // so the phrase-splitter below doesn't try to only grab the
-                // Devanagari text out from the middle of a \frac{}{}.
-                const fracHtml = [];
-                working = working.replace(/\\frac\{([^{}]*)\}\{([^{}]*)\}/g, (m, a, b) => {
-                    if (HINDI_RE.test(a) || HINDI_RE.test(b)) {
-                        fracHtml.push(htmlFrac(a, b));
-                        return `\uE000${fracHtml.length - 1}\uE001`;
-                    }
-                    return m;
-                });
-
-                const SPLIT_RE = new RegExp(`(\\uE000\\d+\\uE001)|(${BR_MARK})|(${HINDI_PHRASE_SRC})`, 'g');
-                let resultHtml = '';
-                let mathBuf = '';
-                let lastIndex = 0;
-                let m2;
-                const flushMath = () => {
-                    if (mathBuf.trim() !== '') {
-                        // Always inline ($...$) here, regardless of the
-                        // original open/close (which may be display "$$").
-                        // These fragments sit side-by-side with plain HTML
-                        // spans (Hindi text, html-frac) as part of one running
-                        // line, so keeping them as display math would force
-                        // each fragment onto its own centered block-level
-                        // line — exactly the stacked/broken layout this fixes.
-                        resultHtml += stashChunk('$' + escRupee(escPercent(mathBuf)) + '$');
-                    }
-                    mathBuf = '';
-                };
-                while ((m2 = SPLIT_RE.exec(working)) !== null) {
-                    mathBuf += working.slice(lastIndex, m2.index);
-                    if (m2[1]) {
-                        flushMath();
-                        resultHtml += fracHtml[parseInt(m2[1].slice(1, -1), 10)];
-                    } else if (m2[2]) {
-                        flushMath();
-                        resultHtml += '<br>';
-                    } else {
-                        flushMath();
-                        resultHtml += `<span class="hindi-inline">${plainSymbols(m2[3].trim())}</span>`;
-                    }
-                    lastIndex = SPLIT_RE.lastIndex;
-                }
-                mathBuf += working.slice(lastIndex);
-                flushMath();
-                return resultHtml;
+                return open + processMath(innerMath) + close;
             }
 
             str = str.replace(/\$\$([\s\S]*?)\$\$/g, (m, inner) => handleSpan(inner, '$$', '$$'));
             str = str.replace(/\$(?!\$)([\s\S]*?)(?<!\$)\$/g, (m, inner) => handleSpan(inner, '$', '$'));
             str = str.replace(/\\\[([\s\S]*?)\\\]/g, (m, inner) => handleSpan(inner, '\\[', '\\]'));
             str = str.replace(/\\\(([\s\S]*?)\\\)/g, (m, inner) => handleSpan(inner, '\\(', '\\)'));
-            // Only now — after every outer delimiter pass has already run —
-            // swap the stashed mixed-span math chunks back in, so their own
-            // literal "$"/"$$" characters can never be re-matched above.
-            str = str.replace(new RegExp(CHUNK_OPEN + '(\\d+)' + CHUNK_CLOSE, 'g'), (m, idx) => mathChunks[parseInt(idx, 10)]);
             str = str.replace(new RegExp(PLACEHOLDER, 'g'), '\\$');
-            // Restore the protected <img>/<svg> tags last, once every $ / $$ /
-            // \( \) / \[ \] pass has already finished, so they always come
-            // back exactly as they went in.
-            str = str.replace(new RegExp(TAG_OPEN + '(\\d+)' + TAG_CLOSE, 'g'), (m, idx) => protectedTags[parseInt(idx, 10)]);
-
-            // Final safety net: any $...$ / $$...$$ span that still has
-            // unbalanced { } after everything above (source data that was
-            // already corrupted before it ever reached this function, e.g.
-            // from a prior broken PDF export that got re-typed/re-pasted)
-            // would otherwise reach MathJax as invalid TeX. MathJax's own
-            // failure mode for that is to print its literal error message
-            // ("Extra close brace or missing open brace" etc.) straight
-            // into the page as visible text, which is worse than showing
-            // the plain un-rendered numbers/symbols. So: count braces per
-            // math span, and if they don't balance, drop just the $ / $$
-            // delimiters (keep the inner text as-is) instead of handing
-            // broken TeX to MathJax.
-            function bracesBalanced(s) {
-                let depth = 0;
-                for (let i = 0; i < s.length; i++) {
-                    if (s[i] === '{') depth++;
-                    else if (s[i] === '}') { depth--; if (depth < 0) return false; }
-                }
-                return depth === 0;
-            }
-            str = str.replace(/\$\$([\s\S]*?)\$\$/g, (m, inner) => bracesBalanced(inner) ? m : inner);
-            str = str.replace(/\$([^$]*?)\$/g, (m, inner) => bracesBalanced(inner) ? m : inner);
-
             return str;
         };
 
