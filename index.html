@@ -5836,6 +5836,28 @@
         window.sanitizeMath = function(text) {
             if (!text) return text;
             let str = String(text);
+
+            // SAFETY NET (Aug 2026): !T (topic-tag) and !tag(...) lines are pure
+            // metadata — they're never shown through MathJax, so they must never
+            // be touched by the Hindi/math wrapping below. Whole-blob calls to
+            // sanitizeMath() have historically slipped in here and there (test
+            // edit-load, PDF export, etc.) and every time one did, it wrapped the
+            // Hindi text on a "!T गणित :: ..." line in \text{...} and then pulled
+            // the space right after "!T" INSIDE those braces — turning it into
+            // "!T\text{ गणित :: ...}", which breaks the parser's "^!T " match and
+            // silently drops the question into the wrong My Report category. All
+            // known whole-blob call sites have now been removed, but this line-
+            // level guard makes that entire class of bug structurally impossible
+            // going forward, no matter what calls sanitizeMath() on a full raw
+            // blob by mistake in the future — tag lines are pulled out before any
+            // processing and stitched back in completely untouched at the end.
+            const PROTECT_RE = /^[ \t]*(!T\s.*|!tag\([^)]*\).*)$/gim;
+            const protectedLines = [];
+            str = str.replace(PROTECT_RE, (m) => {
+                const idx = protectedLines.push(m) - 1;
+                return `__RS_PROTECT_${idx}__`;
+            });
+
             str = str.replace(/\\text\{([^{}]*)\}/g, '$1');
             const PLACEHOLDER = "__RS_DOLLAR__";
             str = str.replace(/([a-zA-Z0-9])\$([a-zA-Z0-9])/g, `$1${PLACEHOLDER}$2`);
@@ -5905,6 +5927,12 @@
             str = str.replace(/\\\[([\s\S]*?)\\\]/g, (m, inner) => handleSpan(inner, '\\[', '\\]'));
             str = str.replace(/\\\(([\s\S]*?)\\\)/g, (m, inner) => handleSpan(inner, '\\(', '\\)'));
             str = str.replace(new RegExp(PLACEHOLDER, 'g'), '\\$');
+
+            // Restore !T / !tag(...) lines exactly as they were, untouched.
+            protectedLines.forEach((original, idx) => {
+                str = str.replace(`__RS_PROTECT_${idx}__`, original);
+            });
+
             return str;
         };
 
