@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="hi">
 <head>
@@ -5980,9 +5979,18 @@
                     continue;
                 }
 
-                const topicTagLineMatch = line.match(/^!T\s+(.+)/i);
+                // FIX (Aug 2026): use \s* (not \s+) so a topic-tag line still
+                // matches even if "!T" and the text got squished together with
+                // no space in between (e.g. old data already saved as
+                // "!T\text{...}" by the sanitizeMath-on-raw-blob bug that has
+                // now been fixed at the source). Also strip any stray
+                // \text{...} wrapper that bug could have baked into the value,
+                // so Subject/Chapter/Sub-topic split on "::" stays clean.
+                const topicTagLineMatch = line.match(/^!T\s*(.+)/i);
                 if (topicTagLineMatch) {
-                    pendingTopicTag = topicTagLineMatch[1].trim();
+                    pendingTopicTag = topicTagLineMatch[1].trim()
+                        .replace(/\\text\{([^{}]*)\}/g, '$1')
+                        .trim();
                     continue;
                 }
 
@@ -6089,7 +6097,10 @@
 
         window.reverseMapQuestionToRaw = function(q, i) {
             const pa = q.passage ? `!P ${String(q.passage).replace(/<br>/g,'\n')}\n` : "";
-            const topicT = (q.topicTag && q.topicTag.trim() !== "") ? `!T ${q.topicTag}\n` : "";
+            // Defensive: strip any leftover \text{...} wrapper from an old
+            // corrupted topicTag before writing it back out as raw "!T ..." text.
+            const cleanTopicTag = (q.topicTag || "").replace(/\\text\{([^{}]*)\}/g, '$1').trim();
+            const topicT = (cleanTopicTag !== "") ? `!T ${cleanTopicTag}\n` : "";
             let qLine =
                 `!!${i+1}! ${String(q.q||"").replace(/<br>/g,'\n').replace(/<b>(.*?)<\/b>/g,'**$1**')}`;
             if (q.tag && q.tag.trim() !== "") {
@@ -8196,7 +8207,20 @@
             window.closeModal();
             let raw = data.rawText || "";
             if (data.questions) { data.questions = window.sanitizeQuestions(data.questions); }
-            if (raw) { raw = window.sanitizeMath(window.stripCitationRefs(raw));
+            // FIX (Aug 2026): do NOT run sanitizeMath() on the whole raw text
+            // blob here. This is the raw SOURCE syntax (!T, !!, !A-D, !!!, !!!!
+            // markers) shown as plain text inside the <textarea> for editing —
+            // a <textarea> never renders MathJax/HTML, so sanitizeMath had zero
+            // visual benefit here. What it DID do is wrap any Hindi text in
+            // \text{...} and then pull an adjacent space inside the braces —
+            // turning "!T गणित ..." into "!T\text{ गणित ...}". That extra
+            // backslash sits directly against "!T" with no space, so the
+            // parser's "^!T\s+(.+)" topic-tag regex stops matching, the
+            // question's topicTag becomes empty, and My Report falls back to
+            // grouping it under the test's generic category (e.g. "FULL
+            // LENGTH") instead of its real Subject/Chapter/Sub-topic. Simply
+            // stripping citation refs (already safe/plain text) is enough here.
+            if (raw) { raw = window.stripCitationRefs(raw);
                 data.rawText = raw; }
             if (!raw && data.questions && data.questions.length > 0) {
                 raw = data.questions.map((q, i) => window.reverseMapQuestionToRaw(q, i)).join('\n');
@@ -8678,7 +8702,12 @@
             // freshness — only trust a fetch that happened in this exact
             // session (t.isFetched).
             if (!t.isFetched) { window.fetchTestForAdmin(code, 'pdf', mode); return; }
-            if (raw) raw = window.sanitizeMath(window.stripCitationRefs(raw));
+            // FIX (Aug 2026): same reasoning as handleAdminTestLoad above —
+            // don't run sanitizeMath() on the raw structural text before it's
+            // parsed into fields; it corrupts "!T ..." topic-tag lines.
+            // sanitizeQuestions() already sanitizes each parsed field
+            // individually later, which is the correct place for it.
+            if (raw) raw = window.stripCitationRefs(raw);
             if (!raw && t.questions && t.questions.length > 0) {
                 raw = t.questions.map((q, i) => window.reverseMapQuestionToRaw(q, i)).join('\n');
                 t.rawText = raw;
@@ -10963,7 +10992,9 @@
             if (data.error) return window.showCustomAlert("Error", "Test data missing.", "❌");
             let raw = data.rawText || "";
             if (data.questions) { data.questions = window.sanitizeQuestions(data.questions); }
-            if (raw) { raw = window.sanitizeMath(window.stripCitationRefs(raw));
+            // FIX (Aug 2026): same reasoning as handleAdminTestLoad — don't
+            // run sanitizeMath() on the raw structural text before parsing.
+            if (raw) { raw = window.stripCitationRefs(raw);
                 data.rawText = raw; }
             if (!raw && data.questions && data.questions.length > 0) {
                 raw = data.questions.map((q, i) => window.reverseMapQuestionToRaw(q, i)).join('\n');
