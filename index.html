@@ -4965,6 +4965,7 @@
                             <span style="color:var(--danger);font-size:13px;"><b>📄 Paste Questions Here <span style="font-weight:normal; font-size:10px; color:var(--text-muted);">(Use $$ for Math, !tag(Subject:Topic) for manual tagging)</span></b></span>
                             <button type="button" class="btn btn-sm btn-outline" style="border-color:var(--success); color:var(--success);font-size:10px;padding:3px 12px;" onclick="window.openVisualEditor()">👁️ Open Visual Editor</button>
                             <button type="button" class="btn btn-sm btn-outline" style="border-color:var(--warning); color:var(--warning);font-size:10px;padding:3px 12px;" onclick="window.cleanRawDataBox()">🧹 Clean Math Formatting</button>
+                            <button type="button" class="btn btn-sm btn-outline" style="border-color:var(--danger); color:var(--danger);font-size:10px;padding:3px 12px;" onclick="window.openDeleteQuestionsDialog()">🗑️ Delete Questions</button>
                         </label>
                         <textarea id="a-rawdata" onkeyup="window.updateQsCount()" onchange="window.updateQsCount()" placeholder="!P Passage...&#10;!!1! What is 2+2? !tag(Math:Arithmetic)&#10;!A Option...&#10;!!! Ans&#10;!!!! Exp..." style="min-height:100px;font-size:12px;"></textarea>
                     </div>
@@ -5867,6 +5868,128 @@
         // text before deciding to save. generateAndSaveLink() also runs this
         // automatically on every save, so this button is mainly for a quick
         // visual check beforehand.
+        // ============================================================================
+        // 🗑️ Delete Questions (Aug 2026) — lets the admin remove one or more
+        // questions from the raw text box while editing a test, by typing
+        // their serial number(s) — individual ("3"), a range ("5-10"), or a
+        // mix of both ("3, 5-10, 15") in one go.
+        // ============================================================================
+
+        // Splits the raw text into one block per question. A block starts at
+        // its "!T ..." topic-tag line if present (so the tag travels with the
+        // question it belongs to, not the one before it), otherwise at its
+        // "!!N! ..." line, and runs up to (but not including) the start of
+        // the next question's block. This mirrors exactly how the real
+        // parser reads question boundaries, so a deleted block always takes
+        // its answer/explanation/!PQ-!PS predicted-question lines with it.
+        window.splitRawIntoQuestionBlocks = function(rawText) {
+            const lines = String(rawText || "").split('\n');
+            const blocks = [];
+            let currentLines = [];
+            let currentNum = null;
+
+            function flush() {
+                if (currentNum !== null) {
+                    blocks.push({ num: currentNum, lines: currentLines });
+                }
+                currentLines = [];
+            }
+
+            lines.forEach((line) => {
+                const isTopicTag = /^!T\s/i.test(line);
+                const qMatch = line.match(/^!!\s*(\d+)\s*!/);
+                if (isTopicTag || qMatch) {
+                    if (currentNum !== null) flush();
+                    if (qMatch) currentNum = parseInt(qMatch[1], 10);
+                    currentLines.push(line);
+                } else {
+                    currentLines.push(line);
+                }
+            });
+            flush();
+            return blocks;
+        };
+
+        // Parses input like "3, 5-10, 15" into a Set of individual numbers.
+        window.parseQuestionNumberSpec = function(spec) {
+            const nums = new Set();
+            String(spec || "").split(',').forEach((part) => {
+                part = part.trim();
+                if (!part) return;
+                const rangeMatch = part.match(/^(\d+)\s*-\s*(\d+)$/);
+                if (rangeMatch) {
+                    let a = parseInt(rangeMatch[1], 10), b = parseInt(rangeMatch[2], 10);
+                    if (a > b) { const t = a; a = b; b = t; }
+                    for (let n = a; n <= b; n++) nums.add(n);
+                } else if (/^\d+$/.test(part)) {
+                    nums.add(parseInt(part, 10));
+                }
+            });
+            return nums;
+        };
+
+        // Removes the chosen question blocks from rawText and renumbers the
+        // remaining "!!N!" markers sequentially (1, 2, 3, ...) so there are
+        // no gaps left behind. Returns the new rawText plus a summary the
+        // caller can show for confirmation.
+        window.deleteQuestionsFromRaw = function(rawText, numsToDelete) {
+            const blocks = window.splitRawIntoQuestionBlocks(rawText);
+            const kept = blocks.filter(b => !numsToDelete.has(b.num));
+            const deletedNums = blocks.filter(b => numsToDelete.has(b.num)).map(b => b.num).sort((a, b) => a - b);
+            const rebuiltLines = [];
+            kept.forEach((b, idx) => {
+                const newNum = idx + 1;
+                b.lines.forEach((line) => {
+                    if (/^!!\s*\d+\s*!/.test(line)) {
+                        rebuiltLines.push(line.replace(/^!!\s*\d+\s*!/, `!!${newNum}!`));
+                    } else {
+                        rebuiltLines.push(line);
+                    }
+                });
+            });
+            return {
+                rawText: rebuiltLines.join('\n'),
+                deletedCount: deletedNums.length,
+                deletedNums,
+                remainingCount: kept.length
+            };
+        };
+
+        window.openDeleteQuestionsDialog = function() {
+            const el = document.getElementById('a-rawdata');
+            if (!el || !el.value.trim()) {
+                return window.showCustomAlert("Empty Box", "Pehle raw text daalo ya test edit ke liye load karo.", "⚠️");
+            }
+            window.showCustomPrompt(
+                "🗑️ Delete Questions",
+                'Question number(s) ya range daalo — jaise <b>3, 5-10, 15</b> (individual aur range dono ek saath chal jayenge, comma se separate karo).<br><small style="opacity:0.7;">Number wahi hai jo raw text me <code>!!N!</code> me likha hai.</small>',
+                (spec) => {
+                    if (!spec || !spec.trim()) return;
+                    const numsToDelete = window.parseQuestionNumberSpec(spec);
+                    if (numsToDelete.size === 0) {
+                        window.showCustomAlert("Invalid Input", "Sahi format me numbers/range daalo, jaise: 3, 5-10, 15", "⚠️");
+                        return;
+                    }
+                    const result = window.deleteQuestionsFromRaw(el.value, numsToDelete);
+                    if (result.deletedCount === 0) {
+                        window.showCustomAlert("No Match", "Ye number(s) is test me mile nahi: " + Array.from(numsToDelete).sort((a, b) => a - b).join(', '), "⚠️");
+                        return;
+                    }
+                    window.showCustomConfirm(
+                        "Confirm Delete",
+                        `Question <b>${result.deletedNums.join(', ')}</b> (total ${result.deletedCount}) delete honge.<br>Baaki bache <b>${result.remainingCount}</b> questions renumber ho jayenge (1 se ${result.remainingCount} tak).<br><br>Ye abhi sirf is box me change hoga — permanent save karne ke liye "🚀 Update Test" dabana zaroori hai.<br><br>Confirm karein?`,
+                        () => {
+                            el.value = result.rawText;
+                            window.updateQsCount();
+                            window.showCustomAlert("Deleted", `${result.deletedCount} question(s) hata diye gaye, baaki ${result.remainingCount} renumber ho gaye. Ab "🚀 Update Test" dabakar save karein.`, "✅");
+                        },
+                        "⚠️"
+                    );
+                },
+                "🗑️"
+            );
+        };
+
         window.cleanRawDataBox = function() {
             const el = document.getElementById('a-rawdata');
             if (!el) return;
