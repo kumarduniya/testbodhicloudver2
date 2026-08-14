@@ -4964,6 +4964,7 @@
                         <label style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
                             <span style="color:var(--danger);font-size:13px;"><b>📄 Paste Questions Here <span style="font-weight:normal; font-size:10px; color:var(--text-muted);">(Use $$ for Math, !tag(Subject:Topic) for manual tagging)</span></b></span>
                             <button type="button" class="btn btn-sm btn-outline" style="border-color:var(--success); color:var(--success);font-size:10px;padding:3px 12px;" onclick="window.openVisualEditor()">👁️ Open Visual Editor</button>
+                            <button type="button" class="btn btn-sm btn-outline" style="border-color:var(--warning); color:var(--warning);font-size:10px;padding:3px 12px;" onclick="window.cleanRawDataBox()">🧹 Clean Math Formatting</button>
                         </label>
                         <textarea id="a-rawdata" onkeyup="window.updateQsCount()" onchange="window.updateQsCount()" placeholder="!P Passage...&#10;!!1! What is 2+2? !tag(Math:Arithmetic)&#10;!A Option...&#10;!!! Ans&#10;!!!! Exp..." style="min-height:100px;font-size:12px;"></textarea>
                     </div>
@@ -5306,7 +5307,7 @@
         // Alag Google account ka Apps Script - sirf OTP/mail bhejne ke liye (Brevo wala)
         const MAIL_SCRIPT_URL =
             "https://script.google.com/macros/s/AKfycby_qNQhtbqVwqU5iTOPKVTXJCklWQpZvCdk79gUSOflo_3QrKQQWjjbiRLrAiAAIcPc_w/exec";
-        const BASE_URL = "https://setupportal.netlify.app/";
+        const BASE_URL = "https://testbodhi.pages.dev/";
 
         // Question-parsing has moved to a Cloudflare Worker — the tag-format
         // algorithm itself is no longer shipped in this file. This just calls
@@ -5833,6 +5834,53 @@
             }
         };
 
+        // General-purpose cleanup (Aug 2026): strips any \text{...} wrapper
+        // that ended up OUTSIDE a real math span ($...$, $$...$$, \(...\),
+        // \[...\]) — which is always accidental, since \text{} only has
+        // meaning to MathJax inside math mode. Legitimate \text{} usage
+        // INSIDE a real math span (e.g. "$$ \text{दूरी} = ... $$", which is
+        // the intended way to show Hindi text inside a formula) is left
+        // completely untouched. Loops per-segment so any depth of nested
+        // corruption ("\text{\text{\text{...}}}") is fully flattened in one
+        // call, not just one layer at a time.
+        window.unwrapStrayText = function(text) {
+            if (!text) return text;
+            const MATH_SPAN_RE = /(\$\$[\s\S]*?\$\$|\$[^$\n]*?\$|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\])/g;
+            const parts = String(text).split(MATH_SPAN_RE);
+            for (let i = 0; i < parts.length; i += 2) {
+                let seg = parts[i];
+                if (!seg || seg.indexOf('\\text{') === -1) continue;
+                let prev;
+                do {
+                    prev = seg;
+                    seg = seg.replace(/\\text\{([^{}]*)\}/g, '$1');
+                } while (seg !== prev);
+                parts[i] = seg;
+            }
+            return parts.join('');
+        };
+
+        // Manual "🧹 Clean Math Formatting" button handler: lets the admin
+        // instantly strip any stray/nested \text{...} corruption sitting in
+        // the raw textarea right now (e.g. an old test loaded for edit that
+        // was corrupted before this bug was fixed), and see the corrected
+        // text before deciding to save. generateAndSaveLink() also runs this
+        // automatically on every save, so this button is mainly for a quick
+        // visual check beforehand.
+        window.cleanRawDataBox = function() {
+            const el = document.getElementById('a-rawdata');
+            if (!el) return;
+            const before = el.value;
+            const after = window.unwrapStrayText(before);
+            el.value = after;
+            window.updateQsCount();
+            if (after === before) {
+                window.showCustomAlert("Already Clean", "No stray \\text{...} formatting found — nothing to fix.", "✅");
+            } else {
+                window.showCustomAlert("Cleaned", "Stray \\text{...} formatting removed. Review the box, then click 'Generate / Update Test' to save.", "🧹");
+            }
+        };
+
         window.sanitizeMath = function(text) {
             if (!text) return text;
             let str = String(text);
@@ -6125,9 +6173,17 @@
 
         window.reverseMapQuestionToRaw = function(q, i) {
             const pa = q.passage ? `!P ${String(q.passage).replace(/<br>/g,'\n')}\n` : "";
-            // Defensive: strip any leftover \text{...} wrapper from an old
-            // corrupted topicTag before writing it back out as raw "!T ..." text.
-            const cleanTopicTag = (q.topicTag || "").replace(/\\text\{([^{}]*)\}/g, '$1').trim();
+            // Defensive: strip ANY depth of \text{...} wrapper from an old
+            // corrupted topicTag before writing it back out as raw "!T ..."
+            // text. Looped (not a single .replace) because corrupted data can
+            // be nested 2-3+ layers deep — one pass alone leaves a layer behind.
+            let cleanTopicTag = (q.topicTag || "").trim();
+            let ctPrev;
+            do {
+                ctPrev = cleanTopicTag;
+                cleanTopicTag = cleanTopicTag.replace(/\\text\{([^{}]*)\}/g, '$1');
+            } while (cleanTopicTag !== ctPrev);
+            cleanTopicTag = cleanTopicTag.trim();
             const topicT = (cleanTopicTag !== "") ? `!T ${cleanTopicTag}\n` : "";
             let qLine =
                 `!!${i+1}! ${String(q.q||"").replace(/<br>/g,'\n').replace(/<b>(.*?)<\/b>/g,'**$1**')}`;
@@ -8553,6 +8609,16 @@
 
             let rawText = aRawDataElem ? aRawDataElem.value : "";
             if (!rawText.trim()) return window.showCustomAlert("Empty Box", "Paste questions!", "⚠️");
+            // FIX (Aug 2026): whatever got typed/loaded into the textarea —
+            // including any old \text{...} corruption still sitting in it
+            // from before this bug was fixed — gets fully cleaned right here,
+            // BEFORE it's parsed and BEFORE it's saved to Firestore. This is
+            // the last point before persistence, so from here on every save
+            // guarantees clean data regardless of what state the textarea
+            // was in. Also reflect the cleaned text back into the textarea
+            // itself so the admin visually sees the corrected version.
+            rawText = window.unwrapStrayText(rawText);
+            if (aRawDataElem) aRawDataElem.value = rawText;
             const parsedQs = await window.parseRawQuestionsRemote(rawText);
             if (parsedQs.length === 0) return window.showCustomAlert("Format Error", "❌ Incorrect format.", "⚠️");
             const fQs = window.updateQsCount() || parsedQs.length;
