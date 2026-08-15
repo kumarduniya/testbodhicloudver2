@@ -3321,6 +3321,21 @@
                 break-inside: auto !important;
                 text-align: justify !important;
                 position: relative !important;
+                /* Defensive: any unusually long unbroken token (a long
+                   fraction, an un-rendered MathJax fallback string, a URL,
+                   etc.) inside a question/option/explanation must wrap
+                   inside its own column rather than overflow past the
+                   column's right edge and get sliced off by the page
+                   boundary in the printed PDF. */
+                overflow-wrap: break-word !important;
+                word-break: break-word !important;
+                max-width: 100% !important;
+            }
+            .print-q .MathJax,
+            .print-q mjx-container {
+                max-width: 100% !important;
+                overflow-x: auto !important;
+                overflow-y: hidden !important;
             }
             .opt-grid {
                 display: grid;
@@ -6035,6 +6050,26 @@
                 const idx = protectedLines.push(m) - 1;
                 return `__RS_PROTECT_${idx}__`;
             });
+
+            // FLATTEN OLD CORRUPTION (Aug 2026): "\text{\text{...}}" nesting
+            // is NEVER intentional — a single \text{} layer is all MathJax
+            // needs to shape Hindi text inside math mode. Any nesting only
+            // ever comes from this content having been through a now-fixed
+            // historical bug more than once. A double/triple-nested \text{}
+            // can leave stray, unmatched braces once the fraction/frac-arg
+            // regexes below try to parse it (their [^{}]* groups can't see
+            // "into" a nested \text{}), which is exactly what produces
+            // MathJax's "Extra close brace or missing open brace" error and
+            // the raw, un-rendered LaTeX text that spills out of its column
+            // in the PDF. This collapses any depth of nesting down to a
+            // single clean \text{...} layer, everywhere in the string —
+            // inside real math spans too, since nesting is never legitimate
+            // there either — before any other processing runs.
+            let prevNest;
+            do {
+                prevNest = str;
+                str = str.replace(/\\text\{\\text\{([^{}]*)\}\}/g, '\\text{$1}');
+            } while (str !== prevNest);
 
             // Protect <img ...> and <svg>...</svg> tags BEFORE any $ math
             // processing runs. If a question's image/diagram markup happens
