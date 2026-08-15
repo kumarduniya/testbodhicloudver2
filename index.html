@@ -3553,6 +3553,117 @@
             pointer-events: none;
         }
 
+
+        /* ---- SVG LIVE PREVIEW / SIZE & POSITION EDITOR ---- */
+        .svg-edit-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 999999999;
+            background: rgba(0,0,0,.68);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 18px;
+        }
+        .svg-edit-panel {
+            width: min(920px, 96vw);
+            max-height: 92vh;
+            overflow: auto;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 14px;
+            box-shadow: 0 18px 60px rgba(0,0,0,.35);
+            color: var(--text-main);
+        }
+        .svg-edit-head {
+            position: sticky;
+            top: 0;
+            z-index: 3;
+            display:flex;
+            justify-content:space-between;
+            align-items:center;
+            gap:10px;
+            padding:12px 14px;
+            background:var(--bg-card);
+            border-bottom:1px solid var(--border-color);
+        }
+        .svg-edit-body {
+            padding:14px;
+            display:grid;
+            grid-template-columns:minmax(0,1.35fr) minmax(260px,.9fr);
+            gap:14px;
+        }
+        .svg-live-preview {
+            min-height:270px;
+            display:flex;
+            align-items:center;
+            justify-content:flex-start;
+            overflow:hidden;
+            background:#fff;
+            border:1px solid #cfd6de;
+            border-radius:10px;
+            padding:18px;
+            position:relative;
+        }
+        .svg-live-preview iframe {
+            width:100%;
+            height:100%;
+            min-height:230px;
+            border:0;
+            background:#fff;
+        }
+        .svg-edit-controls {
+            display:flex;
+            flex-direction:column;
+            gap:12px;
+        }
+        .svg-control-box {
+            border:1px solid var(--border-color);
+            border-radius:10px;
+            padding:10px;
+            background:var(--bg-subtle);
+        }
+        .svg-control-box label {
+            display:flex;
+            justify-content:space-between;
+            gap:8px;
+            font-size:11px;
+            font-weight:700;
+            margin-bottom:7px;
+        }
+        .svg-control-box input[type=range] { width:100%; }
+        .svg-slider-value {
+            font-weight:800;
+            color:var(--primary);
+        }
+        .svg-edit-foot {
+            position:sticky;
+            bottom:0;
+            z-index:3;
+            display:flex;
+            justify-content:flex-end;
+            gap:8px;
+            padding:10px 14px;
+            background:var(--bg-card);
+            border-top:1px solid var(--border-color);
+        }
+        .svg-edit-code {
+            margin-top:10px;
+            width:100%;
+            min-height:90px;
+            font:11px/1.4 Consolas, monospace;
+            resize:vertical;
+            border:1px solid var(--border-color);
+            border-radius:8px;
+            padding:8px;
+            background:#111;
+            color:#e8edf4;
+        }
+        @media (max-width: 760px) {
+            .svg-edit-body { grid-template-columns:1fr; }
+            .svg-live-preview { min-height:220px; }
+        }
+
         /* ============================================================
            ANALYSIS
            ============================================================ */
@@ -9368,6 +9479,9 @@
                         <button class="vp-btn svg-btn" onclick="window.triggerVisualSvg(${i})">🖋️ Add SVG</button>
                     `;
                     if (hasMedia) {
+                        if (line.includes('<svg')) {
+                            btnsHTML += `<button class="vp-btn svg-edit-btn" onclick="window.openSvgEditor(${i})">👁️ Preview / Resize</button>`;
+                        }
                         btnsHTML += `<button class="vp-btn del-btn" onclick="window.deleteVisualMedia(${i})">🗑️ Delete Media</button>`;
                     }
                     html += `
@@ -9406,10 +9520,141 @@
                     rawDataElem.value = lines.join('\n');
                     window.showCustomAlert("Success", "SVG Code added successfully! 🎉", "✅");
                     window.renderVisualEditorContent();
+                    // Open the editor immediately so the admin can set the final size.
+                    setTimeout(() => window.openSvgEditor(lineIdx), 0);
                 } else if (svgCode) {
-                    window.showCustomAlert("Error", "Invalid SVG code. It must start with '<svg...'", "❌");
+                    window.showCustomAlert("Error", "Invalid SVG code. It must start with '<svg...'.", "❌");
                 }
             }, "🖋️");
+        };
+
+        window._extractSvgFromLine = function(line) {
+            const m = String(line || '').match(/<svg\b[\s\S]*?<\/svg>/i);
+            return m ? m[0] : '';
+        };
+
+        window._svgNumFromStyle = function(svg, prop, fallback) {
+            const m = String(svg || '').match(new RegExp(prop + "\\s*[:=]\\s*[\"']?([0-9]+(?:\\.[0-9]+)?)px", "i"));
+            return m ? parseFloat(m[1]) : fallback;
+        };
+
+        window._applySvgPresentationStyle = function(svg, widthPx, xOffset, yOffset) {
+            let out = String(svg || '').trim();
+            const width = Math.max(50, Math.min(700, Math.round(widthPx)));
+            const x = Math.max(-180, Math.min(180, Math.round(xOffset)));
+            const y = Math.max(-80, Math.min(80, Math.round(yOffset)));
+            const styleChunk = `max-width:${width}px !important;width:${width}px !important;height:auto !important;display:block !important;position:relative !important;left:${x}px !important;top:${y}px !important;margin-left:0 !important;margin-right:0 !important;`;
+            if (/\bstyle\s*=\s*["'][^"']*["']/i.test(out)) {
+                out = out.replace(/\bstyle\s*=\s*(["'])([\s\S]*?)\1/i, (m, q, st) => `style=${q}${st.trim().replace(/;?\s*$/, ';')}${styleChunk}${q}`);
+            } else {
+                out = out.replace(/^<svg\b/i, `<svg style="${styleChunk}"`);
+            }
+            return out;
+        };
+
+        window._svgPreviewSrcdoc = function(svg, width, x, y) {
+            const clean = String(svg || '')
+                .replace(/<script[\s\S]*?<\/script>/gi, '')
+                .replace(/\son[a-z]+\s*=\s*(["'])[^"']*\1/gi, '');
+            const styled = window._applySvgPresentationStyle(clean, width, x, y);
+            return `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#fff}body{display:flex;align-items:flex-start;justify-content:flex-start;padding:12px;box-sizing:border-box}svg{box-sizing:border-box}</style></head><body>${styled}</body></html>`;
+        };
+
+        window.openSvgEditor = function(lineIdx) {
+            const rawDataElem = document.getElementById('a-rawdata');
+            if (!rawDataElem) return;
+            const lines = rawDataElem.value.split('\n');
+            const svg = window._extractSvgFromLine(lines[lineIdx]);
+            if (!svg) return window.showCustomAlert("SVG Not Found", "Is line par SVG code nahi mila.", "⚠️");
+
+            const currentWidth = window._svgNumFromStyle(svg, 'max-width', window._svgNumFromStyle(svg, 'width', 220));
+            const initialX = window._svgNumFromStyle(svg, 'left', 0);
+            const initialY = window._svgNumFromStyle(svg, 'top', 0);
+
+            const overlay = document.createElement('div');
+            overlay.className = 'svg-edit-overlay';
+            overlay.id = 'svg-edit-overlay';
+            overlay.innerHTML = `
+                <div class="svg-edit-panel">
+                    <div class="svg-edit-head">
+                        <div><b style="font-size:15px;color:var(--primary);">🖋️ SVG Preview & Size Editor</b><div style="font-size:10px;color:var(--text-muted);margin-top:2px;">Question line ${lineIdx + 1} • Final settings yahin save hongi.</div></div>
+                        <button class="btn btn-danger btn-sm" onclick="window.closeSvgEditor()">✕ Close</button>
+                    </div>
+                    <div class="svg-edit-body">
+                        <div>
+                            <div class="svg-live-preview"><iframe id="svg-live-iframe" sandbox="" title="SVG Preview"></iframe></div>
+                            <textarea id="svg-final-code" class="svg-edit-code" readonly></textarea>
+                        </div>
+                        <div class="svg-edit-controls">
+                            <div class="svg-control-box">
+                                <label><span>📏 Size</span><span class="svg-slider-value" id="svg-width-value">${Math.round(currentWidth)} px</span></label>
+                                <input id="svg-width-slider" type="range" min="50" max="700" step="1" value="${Math.round(currentWidth)}" oninput="window.updateSvgEditorPreview()">
+                            </div>
+                            <div class="svg-control-box">
+                                <label><span>↔ Horizontal Position</span><span class="svg-slider-value" id="svg-x-value">${Math.round(initialX)} px</span></label>
+                                <input id="svg-x-slider" type="range" min="-180" max="180" step="1" value="${Math.round(initialX)}" oninput="window.updateSvgEditorPreview()">
+                            </div>
+                            <div class="svg-control-box">
+                                <label><span>↕ Vertical Position</span><span class="svg-slider-value" id="svg-y-value">${Math.round(initialY)} px</span></label>
+                                <input id="svg-y-slider" type="range" min="-80" max="80" step="1" value="${Math.round(initialY)}" oninput="window.updateSvgEditorPreview()">
+                            </div>
+                            <div class="svg-control-box" style="font-size:11px;line-height:1.5;">
+                                <b>💡 Tip:</b> slider ko move karke preview ko exactly us size/position par lao jo student ko dikhana hai. Original SVG design commands preserve rahenge.
+                            </div>
+                        </div>
+                    </div>
+                    <div class="svg-edit-foot">
+                        <button class="btn btn-outline btn-sm" onclick="window.closeSvgEditor()">Cancel</button>
+                        <button class="btn btn-success btn-sm" onclick="window.saveSvgEditor(${lineIdx})">✅ Apply & Save Size</button>
+                    </div>
+                </div>`;
+            document.body.appendChild(overlay);
+            window._svgEditorState = { lineIdx, originalSvg: svg };
+            window.updateSvgEditorPreview();
+        };
+
+        window.updateSvgEditorPreview = function() {
+            const st = window._svgEditorState;
+            if (!st) return;
+            const w = parseInt(document.getElementById('svg-width-slider')?.value || '220', 10);
+            const x = parseInt(document.getElementById('svg-x-slider')?.value || '0', 10);
+            const y = parseInt(document.getElementById('svg-y-slider')?.value || '0', 10);
+            const wv = document.getElementById('svg-width-value');
+            const xv = document.getElementById('svg-x-value');
+            const yv = document.getElementById('svg-y-value');
+            if (wv) wv.textContent = w + ' px';
+            if (xv) xv.textContent = x + ' px';
+            if (yv) yv.textContent = y + ' px';
+            const finalSvg = window._applySvgPresentationStyle(st.originalSvg, w, x, y);
+            const code = document.getElementById('svg-final-code');
+            if (code) code.value = finalSvg;
+            const iframe = document.getElementById('svg-live-iframe');
+            if (iframe) iframe.srcdoc = window._svgPreviewSrcdoc(st.originalSvg, w, x, y);
+        };
+
+        window.saveSvgEditor = function(lineIdx) {
+            const rawDataElem = document.getElementById('a-rawdata');
+            if (!rawDataElem) return;
+            const st = window._svgEditorState;
+            if (!st) return;
+            const w = parseInt(document.getElementById('svg-width-slider')?.value || '220', 10);
+            const x = parseInt(document.getElementById('svg-x-slider')?.value || '0', 10);
+            const y = parseInt(document.getElementById('svg-y-slider')?.value || '0', 10);
+            const lines = rawDataElem.value.split('\n');
+            const currentLine = lines[lineIdx] || '';
+            const replaced = currentLine.replace(/<svg\b[\s\S]*?<\/svg>/i, window._applySvgPresentationStyle(st.originalSvg, w, x, y));
+            lines[lineIdx] = replaced;
+            rawDataElem.value = lines.join('\n');
+            window.closeSvgEditor();
+            window.updateQsCount();
+            window.renderVisualEditorContent();
+            window.showToast('SVG size & position saved', '✅');
+        };
+
+        window.closeSvgEditor = function() {
+            const overlay = document.getElementById('svg-edit-overlay');
+            if (overlay) overlay.remove();
+            window._svgEditorState = null;
         };
 
         window.deleteVisualMedia = function(lineIdx) {
