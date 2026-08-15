@@ -3647,6 +3647,20 @@
             background:var(--bg-card);
             border-top:1px solid var(--border-color);
         }
+        .svg-trim-status {
+            font-size:11px;
+            line-height:1.5;
+            padding:8px 10px;
+            border:1px dashed var(--border-color);
+            border-radius:8px;
+            background:var(--bg-subtle);
+        }
+        .svg-trim-btns {
+            display:flex;
+            gap:8px;
+            flex-wrap:wrap;
+        }
+
         .svg-edit-code {
             margin-top:10px;
             width:100%;
@@ -9538,25 +9552,108 @@
             return m ? parseFloat(m[1]) : fallback;
         };
 
-        window._applySvgPresentationStyle = function(svg, widthPx, xOffset, yOffset) {
+        window._applySvgPresentationStyle = function(svg, widthPx, xOffset, yOffset, cropInfo) {
             let out = String(svg || '').trim();
             const width = Math.max(50, Math.min(700, Math.round(widthPx)));
             const x = Math.max(-180, Math.min(180, Math.round(xOffset)));
             const y = Math.max(-80, Math.min(80, Math.round(yOffset)));
+
+            if (cropInfo && cropInfo.viewBox) {
+                const vb = cropInfo.viewBox;
+                out = out.replace(/\sdata-trim-pad=["'][^"']*["']/gi, '');
+                out = out.replace(/\sviewBox\s*=\s*(["'])[^"']*\1/i, ` viewBox="${vb}"`);
+                if (!/\bviewBox\s*=/.test(out)) {
+                    out = out.replace(/^<svg\b/i, `<svg viewBox="${vb}"`);
+                }
+            }
+
             const styleChunk = `max-width:${width}px !important;width:${width}px !important;height:auto !important;display:block !important;position:relative !important;left:${x}px !important;top:${y}px !important;margin-left:0 !important;margin-right:0 !important;`;
             if (/\bstyle\s*=\s*["'][^"']*["']/i.test(out)) {
-                out = out.replace(/\bstyle\s*=\s*(["'])([\s\S]*?)\1/i, (m, q, st) => `style=${q}${st.trim().replace(/;?\s*$/, ';')}${styleChunk}${q}`);
+                out = out.replace(/\bstyle\s*=\s*(["'])([\s\S]*?)\1/i, (m,q,st) => `style=${q}${st.trim().replace(/;?\s*$/,';')}${styleChunk}${q}`);
             } else {
                 out = out.replace(/^<svg\b/i, `<svg style="${styleChunk}"`);
             }
             return out;
         };
 
-        window._svgPreviewSrcdoc = function(svg, width, x, y) {
+        window._measureSvgContentBox = function(svgText) {
+            return new Promise((resolve) => {
+                try {
+                    const parser = new DOMParser();
+                    const doc = parser.parseFromString(String(svgText || ''), 'image/svg+xml');
+                    const svgEl = doc.documentElement;
+                    if (!svgEl || String(svgEl.tagName).toLowerCase() !== 'svg') return resolve(null);
+                    const vbText = svgEl.getAttribute('viewBox');
+                    if (!vbText) return resolve(null);
+                    const nums = vbText.trim().split(/[\s,]+/).map(Number);
+                    if (nums.length !== 4 || nums.some(n => !Number.isFinite(n)) || nums[2] <= 0 || nums[3] <= 0) return resolve(null);
+                    const host = document.createElement('div');
+                    host.style.cssText = 'position:fixed;left:-100000px;top:-100000px;width:2000px;height:2000px;overflow:visible;opacity:0;pointer-events:none;';
+                    const clone = document.importNode(svgEl, true);
+                    clone.removeAttribute('style');
+                    clone.setAttribute('width', '2000');
+                    clone.setAttribute('height', '2000');
+                    clone.style.cssText = 'width:2000px;height:2000px;overflow:visible;display:block;';
+                    host.appendChild(clone);
+                    document.body.appendChild(host);
+                    requestAnimationFrame(() => {
+                        try {
+                            const b = clone.getBBox();
+                            host.remove();
+                            if (!b || !Number.isFinite(b.x) || !Number.isFinite(b.y) || !Number.isFinite(b.width) || !Number.isFinite(b.height) || b.width <= 0 || b.height <= 0) return resolve(null);
+                            resolve({vx:nums[0], vy:nums[1], vw:nums[2], vh:nums[3], x:b.x, y:b.y, w:b.width, h:b.height});
+                        } catch(e) { host.remove(); resolve(null); }
+                    });
+                } catch(e) { resolve(null); }
+            });
+        };
+
+        window._cropSvgViewBox = function(m, pad) {
+            if (!m) return null;
+            const p = Math.max(0, Math.min(12, Number(pad || 0)));
+            // getBBox() is in SVG user units. A small pad keeps strokes/text from touching edges.
+            let x = m.x - p;
+            let y = m.y - p;
+            let r = m.x + m.w + p;
+            let b = m.y + m.h + p;
+            // Never enlarge beyond the original viewBox.
+            x = Math.max(m.vx, x);
+            y = Math.max(m.vy, y);
+            r = Math.min(m.vx + m.vw, r);
+            b = Math.min(m.vy + m.vh, b);
+            return `${Number(x.toFixed(3))} ${Number(y.toFixed(3))} ${Number(Math.max(1,r-x).toFixed(3))} ${Number(Math.max(1,b-y).toFixed(3))}`;
+        };
+
+        window.trimSvgEditorNow = async function() {
+            const st = window._svgEditorState;
+            if (!st) return;
+            const pad = parseInt(document.getElementById('svg-trim-pad-slider')?.value || '4', 10);
+            const status = document.getElementById('svg-trim-status');
+            if (status) status.textContent = '⏳ SVG ke actual drawing area ko measure kar raha hoon...';
+            const measured = await window._measureSvgContentBox(st.originalSvg);
+            if (!measured) {
+                if (status) status.textContent = '⚠️ Auto-trim detect nahi ho paya. Original viewBox use hoga.';
+                return;
+            }
+            st.cropViewBox = window._cropSvgViewBox(measured, pad);
+            if (status) status.textContent = '✅ Extra blank space crop ho gaya. Ab size slider se final size set karo.';
+            window.updateSvgEditorPreview();
+        };
+
+        window.resetSvgTrim = function() {
+            const st = window._svgEditorState;
+            if (!st) return;
+            st.cropViewBox = null;
+            const status = document.getElementById('svg-trim-status');
+            if (status) status.textContent = '↩ Original viewBox restore ho gaya.';
+            window.updateSvgEditorPreview();
+        };
+
+        window._svgPreviewSrcdoc = function(svg, width, x, y, cropInfo) {
             const clean = String(svg || '')
                 .replace(/<script[\s\S]*?<\/script>/gi, '')
                 .replace(/\son[a-z]+\s*=\s*(["'])[^"']*\1/gi, '');
-            const styled = window._applySvgPresentationStyle(clean, width, x, y);
+            const styled = window._applySvgPresentationStyle(clean, width, x, y, cropInfo);
             return `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#fff}body{display:flex;align-items:flex-start;justify-content:flex-start;padding:12px;box-sizing:border-box}svg{box-sizing:border-box}</style></head><body>${styled}</body></html>`;
         };
 
@@ -9570,6 +9667,7 @@
             const currentWidth = window._svgNumFromStyle(svg, 'max-width', window._svgNumFromStyle(svg, 'width', 220));
             const initialX = window._svgNumFromStyle(svg, 'left', 0);
             const initialY = window._svgNumFromStyle(svg, 'top', 0);
+            const initialTrimPad = (() => { const m = String(svg).match(/\bdata-trim-pad=["'](\d+(?:\.\d+)?)["']/i); return m ? parseFloat(m[1]) : 4; })();
 
             const overlay = document.createElement('div');
             overlay.className = 'svg-edit-overlay';
@@ -9598,6 +9696,15 @@
                                 <label><span>↕ Vertical Position</span><span class="svg-slider-value" id="svg-y-value">${Math.round(initialY)} px</span></label>
                                 <input id="svg-y-slider" type="range" min="-80" max="80" step="1" value="${Math.round(initialY)}" oninput="window.updateSvgEditorPreview()">
                             </div>
+                            <div class="svg-control-box">
+                                <label><span>✂️ Empty Space</span><span class="svg-slider-value" id="svg-trim-pad-value">${Math.round(initialTrimPad)}</span></label>
+                                <input id="svg-trim-pad-slider" type="range" min="0" max="12" step="1" value="${Math.round(initialTrimPad)}" oninput="window.updateSvgEditorPreview()">
+                                <div class="svg-trim-btns" style="margin-top:8px;">
+                                    <button type="button" class="btn btn-outline btn-sm" onclick="window.trimSvgEditorNow()">✂️ Auto Trim</button>
+                                    <button type="button" class="btn btn-outline btn-sm" onclick="window.resetSvgTrim()">↩ Reset Crop</button>
+                                </div>
+                                <div class="svg-trim-status" id="svg-trim-status">Extra blank viewBox space ko automatically crop kar sakte ho. Artwork change nahi hoga.</div>
+                            </div>
                             <div class="svg-control-box" style="font-size:11px;line-height:1.5;">
                                 <b>💡 Tip:</b> slider ko move karke preview ko exactly us size/position par lao jo student ko dikhana hai. Original SVG design commands preserve rahenge.
                             </div>
@@ -9609,7 +9716,7 @@
                     </div>
                 </div>`;
             document.body.appendChild(overlay);
-            window._svgEditorState = { lineIdx, originalSvg: svg };
+            window._svgEditorState = { lineIdx, originalSvg: svg, cropViewBox: null };
             window.updateSvgEditorPreview();
         };
 
@@ -9622,14 +9729,18 @@
             const wv = document.getElementById('svg-width-value');
             const xv = document.getElementById('svg-x-value');
             const yv = document.getElementById('svg-y-value');
+            const pad = parseInt(document.getElementById('svg-trim-pad-slider')?.value || '4', 10);
+            const pv = document.getElementById('svg-trim-pad-value');
             if (wv) wv.textContent = w + ' px';
             if (xv) xv.textContent = x + ' px';
             if (yv) yv.textContent = y + ' px';
-            const finalSvg = window._applySvgPresentationStyle(st.originalSvg, w, x, y);
+            if (pv) pv.textContent = pad;
+            const cropInfo = st.cropViewBox ? {viewBox: st.cropViewBox, pad} : null;
+            const finalSvg = window._applySvgPresentationStyle(st.originalSvg, w, x, y, cropInfo);
             const code = document.getElementById('svg-final-code');
             if (code) code.value = finalSvg;
             const iframe = document.getElementById('svg-live-iframe');
-            if (iframe) iframe.srcdoc = window._svgPreviewSrcdoc(st.originalSvg, w, x, y);
+            if (iframe) iframe.srcdoc = window._svgPreviewSrcdoc(st.originalSvg, w, x, y, cropInfo);
         };
 
         window.saveSvgEditor = function(lineIdx) {
@@ -9640,9 +9751,15 @@
             const w = parseInt(document.getElementById('svg-width-slider')?.value || '220', 10);
             const x = parseInt(document.getElementById('svg-x-slider')?.value || '0', 10);
             const y = parseInt(document.getElementById('svg-y-slider')?.value || '0', 10);
+            const pad = parseInt(document.getElementById('svg-trim-pad-slider')?.value || '4', 10);
             const lines = rawDataElem.value.split('\n');
             const currentLine = lines[lineIdx] || '';
-            const replaced = currentLine.replace(/<svg\b[\s\S]*?<\/svg>/i, window._applySvgPresentationStyle(st.originalSvg, w, x, y));
+            const cropInfo = st.cropViewBox ? {viewBox: st.cropViewBox, pad} : null;
+            let finalSvg = window._applySvgPresentationStyle(st.originalSvg, w, x, y, cropInfo);
+            if (cropInfo && !/\bdata-trim-pad=/.test(finalSvg)) {
+                finalSvg = finalSvg.replace(/^<svg\b/i, `<svg data-trim-pad="${pad}"`);
+            }
+            const replaced = currentLine.replace(/<svg\b[\s\S]*?<\/svg>/i, finalSvg);
             lines[lineIdx] = replaced;
             rawDataElem.value = lines.join('\n');
             window.closeSvgEditor();
