@@ -8856,15 +8856,13 @@
 
             let rawText = aRawDataElem ? aRawDataElem.value : "";
             if (!rawText.trim()) return window.showCustomAlert("Empty Box", "Paste questions!", "⚠️");
-            // FIX (Aug 2026): whatever got typed/loaded into the textarea —
-            // including any old \text{...} corruption still sitting in it
-            // from before this bug was fixed — gets fully cleaned right here,
-            // BEFORE it's parsed and BEFORE it's saved to Firestore. This is
-            // the last point before persistence, so from here on every save
-            // guarantees clean data regardless of what state the textarea
-            // was in. Also reflect the cleaned text back into the textarea
-            // itself so the admin visually sees the corrected version.
-            rawText = window.unwrapStrayText(rawText);
+            // IMPORTANT: rawText is the SOURCE of truth. Do NOT run a visual/
+            // MathJax sanitizer over the entire raw textarea before saving.
+            // A standalone currency '$' in any newly-added question must not
+            // be paired with a later '$' or have source syntax rewritten.
+            // Worker parsing is structural; math cleanup happens per parsed
+            // field on the Student/Admin renderer only.
+            rawText = String(rawText);
             if (aRawDataElem) aRawDataElem.value = rawText;
             const parsedQs = await window.parseRawQuestionsRemote(rawText);
             if (parsedQs.length === 0) return window.showCustomAlert("Format Error", "❌ Incorrect format.", "⚠️");
